@@ -1,27 +1,18 @@
-# AutoIntellect – unified deps (Python 3.13 friendly)
-
-# ── UI / App ─────────────────────────────────────────────────────────
+# Приложение/requirements.txt (вариант под Py 3.11)
 streamlit>=1.42.2
 streamlit-webrtc==0.47.0
 
-# ── ML stack (Py3.13) ────────────────────────────────────────────────
-# PyTorch под 3.13: используем современную ветку
-torch==2.7.0
-torchvision==0.22.0
+torch==2.0.1
+torchvision==0.15.2
 ultralytics>=8.0.0
-
-# OpenCV: только headless, чтобы избежать конфликтов с системным GUI
 opencv-python-headless==4.10.0.84
 
-# ── Python ecosystem ─────────────────────────────────────────────────
-# Numpy/Pandas версии, у которых есть колёса под 3.13
-numpy>=2.1.2
-pandas>=2.3.0
+tensorflow==2.18.0
+
+numpy==1.26.4
+pandas==2.2.3
 sqlalchemy==2.0.18
 psutil==5.9.5
 pillow>=10.3.0
 plotly==5.15.0
-
-# ── OpenAI via proxy ────────────────────────────────────────────────
 openai==1.72.0
-
