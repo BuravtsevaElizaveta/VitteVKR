@@ -22,3 +22,6 @@ plotly==5.15.0
 
 # ─ OpenAI
 openai==1.72.0
+
+av==12.3.0
+
