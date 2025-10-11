@@ -1,18 +1,19 @@
-# Приложение/requirements.txt
+# AutoIntellect – unified deps (Python 3.13, no PyAV)
 
-# ─ UI
+# ── UI / App ─────────────────────────────────────────────────────────
 streamlit>=1.42.2
+# Уберите следующую строку, если не используете WebRTC
 streamlit-webrtc==0.47.0
 
-# ─ ML (совместимые пины)
+# ── ML stack (совместимые пины) ─────────────────────────────────────
 torch==2.7.0
 torchvision==0.22.0
 ultralytics>=8.0.0
 
-# ─ OpenCV: более совместимая версия
+# OpenCV без GUI (стабильный пин для Cloud)
 opencv-python-headless==4.9.0.80
 
-# ─ Ecosystem
+# ── Python ecosystem ─────────────────────────────────────────────────
 numpy>=2.1.2
 pandas>=2.3.0
 sqlalchemy==2.0.18
@@ -20,8 +21,5 @@ psutil==5.9.5
 pillow>=10.3.0
 plotly==5.15.0
 
-# ─ OpenAI
+# ── OpenAI via proxy ────────────────────────────────────────────────
 openai==1.72.0
-
-av==12.3.0
-
