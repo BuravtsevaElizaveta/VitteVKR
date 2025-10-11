@@ -17,13 +17,27 @@ import cv2
 
 from utils.db import insert_detection
 
-# Попытка импортировать ultralytics
-try:
-    from ultralytics import YOLO
-    UL_OK = True
-except Exception:
-    UL_OK = False
+CV2_OK = True
+CV2_ERR = None
+ULTRA_OK = True
+ULTRA_ERR = None
 
+try:
+    import cv2  # OpenCV
+except Exception as e:
+    CV2_OK = False
+    CV2_ERR = e
+
+try:
+    # импортируйте ultralytics/torch только если cv2 есть
+    if CV2_OK:
+        from ultralytics import YOLO
+    else:
+        ULTRA_OK = False
+        ULTRA_ERR = RuntimeError("Ultralytics пропущен, т.к. OpenCV не загрузился")
+except Exception as e:
+    ULTRA_OK = False
+    ULTRA_ERR = e
 
 @st.cache_resource(show_spinner="Загрузка YOLO-весов…")
 def _load_yolo(weights_path: str):
@@ -90,21 +104,21 @@ def _save_summary_to_db(db_path: Path, filename: str, source: str, model_name: s
     )
 
 
-def render_yolo_detection(db_path: Path):
+def render_yolo_detection():
     st.header("🔧 Детекция (YOLO)")
-
-    with st.sidebar:
-        st.subheader("Выбор модели YOLO")
-        model_choice = st.selectbox("Выберите модель YOLO", ["YOLOv8"], index=0, key="yolo:ver")
-        weights_path = st.text_input("Путь к модели YOLOv8", "models/YOLOv8.pt", key="yolo:weights")
-
-        st.subheader("Опции процессора")
-        device = st.radio("Выберите устройство", ["CPU", "GPU"], horizontal=True, key="yolo:device")
-        device = "cuda" if device == "GPU" else "cpu"
-
-        st.subheader("Настройки детекции")
-        conf_thr = st.slider("Порог уверенности", 0.0, 1.0, 0.25, 0.01, key="yolo:conf")
-        thickness = st.slider("Толщина линии", 1, 10, 2, 1, key="yolo:th")
+    if not CV2_OK:
+        st.warning(
+            "Модуль OpenCV (cv2) недоступен в этом деплое. "
+            "Детекция временно отключена, остальные вкладки работают."
+        )
+        with st.expander("Показать техническую деталь ошибки"):
+            st.code(repr(CV2_ERR))
+        return
+    if not ULTRA_OK:
+        st.warning("YOLO недоступен. Детекция отключена.")
+        with st.expander("Показать техническую деталь ошибки"):
+            st.code(repr(ULTRA_ERR))
+        return
 
     tabs = st.tabs(["🖼️ Изображение", "🎞️ Видео (офлайн)"])
 
@@ -233,3 +247,4 @@ def render_yolo_detection(db_path: Path):
 
             _save_summary_to_db(db_path, vid_file.name, "video", model_choice, dets_all)
             st.success("Обработка видео завершена и сохранена в БД.")
+
