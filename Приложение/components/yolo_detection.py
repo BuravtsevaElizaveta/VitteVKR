@@ -1,4 +1,3 @@
-У меня вот такой yolo_detection.py:
 # components/yolo_detection.py
 """
 Вкладка «Детекция (YOLO)»
@@ -248,3 +247,4 @@ def render_yolo_detection():
 
             _save_summary_to_db(db_path, vid_file.name, "video", model_choice, dets_all)
             st.success("Обработка видео завершена и сохранена в БД.")
+
