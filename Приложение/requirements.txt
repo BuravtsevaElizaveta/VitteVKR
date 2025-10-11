@@ -1,18 +1,29 @@
-# Приложение/requirements.txt (вариант под Py 3.11)
+# AutoIntellect – deps for Python 3.11 (Torch 2.0.1 + TF 2.18)
+
+# ── UI / App ─────────────────────────────────────────────────────────
 streamlit>=1.42.2
 streamlit-webrtc==0.47.0
 
+# ── ML stack (Py3.11 wheels exist) ───────────────────────────────────
 torch==2.0.1
 torchvision==0.15.2
-ultralytics>=8.0.0
+ultralytics==8.1.0
+# headless-вариант, чтобы не тянуть GUI-библиотеки
 opencv-python-headless==4.10.0.84
 
+# ── TensorFlow (есть колёса под Py3.11) ─────────────────────────────
 tensorflow==2.18.0
 
+# ── Python ecosystem ─────────────────────────────────────────────────
 numpy==1.26.4
 pandas==2.2.3
 sqlalchemy==2.0.18
 psutil==5.9.5
 pillow>=10.3.0
 plotly==5.15.0
+
+# ── OpenAI via proxy ────────────────────────────────────────────────
 openai==1.72.0
+
+# ── (опционально для webrtc-видео) ──────────────────────────────────
+# av==12.3.0
