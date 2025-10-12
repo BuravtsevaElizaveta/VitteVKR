@@ -300,12 +300,12 @@ def fix_number_format_new_rus(s: str, confs: List[float]) -> Tuple[str, List[flo
 def render_plate_assistant(db_path: Path):
     st.header("🪪 Номер + ИИ-ассистент")
     if not CV2_OK:
-        st.info("OpenCV недоступен в этом деплое. Вкладка ограничена.")
-        if CV2_ERR:
-            with st.expander("Техническая деталь"):
-                st.code(repr(CV2_ERR))
+        st.warning("OpenCV (cv2) недоступен. Вкладка «Номер + ИИ-ассистент» отключена.")
+        with st.expander("Показать техническую деталь ошибки"):
+            st.code(repr(CV2_ERR))
+        st.info("Убедитесь, что в requirements.txt нет opencv-python, а установлен opencv-python-headless.")
         return
-
+        
     defaults = get_defaults()
     with st.sidebar:
         st.subheader("ProxyAPI")
@@ -411,3 +411,4 @@ def render_plate_assistant(db_path: Path):
         brand=brand or None, car_type=car_type or None, color=color or None, conf_avg=avg_conf, extra_json=None
     )
     st.toast("Сохранено в detections.db", icon="💾")
+
