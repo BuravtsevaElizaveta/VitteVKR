@@ -1,25 +1,21 @@
-# AutoIntellect – deps for Streamlit Cloud (Python 3.13)
+# --- App ---
+streamlit>=1.42.2,<1.51
 
-# ── UI
-streamlit==1.50.0
-# если действительно используете камеру/WebRTC — оставьте, иначе удалите следующую строку
-streamlit-webrtc==0.47.6
-
-# ── ML (совместимо с Py 3.13)
+# --- ML (Py3.13 wheels) ---
 torch==2.7.0
 torchvision==0.22.0
 ultralytics==8.3.210
 
-# ── OpenCV (только headless!)
-opencv-python-headless==4.9.0.80
+# Только headless OpenCV (без libGL)
+opencv-python-headless==4.10.0.84
 
-# ── Python ecosystem
+# --- Py stack ---
 numpy>=2.1.2
 pandas>=2.3.0
 sqlalchemy==2.0.18
-psutil==5.9.8
+psutil==5.9.5
 pillow>=10.3.0
 plotly==5.15.0
 
-# ── OpenAI
+# --- OpenAI / Proxy ---
 openai==1.72.0
