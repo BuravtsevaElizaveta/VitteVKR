@@ -22,7 +22,7 @@ def render_sidebar():
     # Раздел выбора модели
     st.sidebar.subheader("Выбор модели")
     model_option = st.sidebar.selectbox("Выберите модель YOLO", ["YOLOv8", "YOLOv9"])
-    model_path = st.sidebar.text_input(f"Путь к модели {model_option}", f"models/{model_option}.pt")
+    model_path = st.sidebar.text_input(f"Путь к модели {model_option}", f"Приложение/models/{model_option}.pt")
     
     # Раздел выбора устройства
     st.sidebar.subheader("Опции процессора")
@@ -45,3 +45,4 @@ def render_sidebar():
         logger.info("Используется CPU.")
     
     return model_option, model_path, device_option, conf_thresh, line_thickness
+
