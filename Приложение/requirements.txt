@@ -1,25 +1,23 @@
-# AutoIntellect – unified deps (Python 3.13, no PyAV)
+# AutoIntellect – объединённые зависимости
 
-# ── UI / App ─────────────────────────────────────────────────────────
-streamlit>=1.42.2
-# Уберите следующую строку, если не используете WebRTC
-streamlit-webrtc==0.47.0
+streamlit==1.46.0
+streamlit-webrtc==0.47.6
 
-# ── ML stack (совместимые пины) ─────────────────────────────────────
-torch==2.7.0
-torchvision==0.22.0
-ultralytics>=8.0.0
+# ─── ML ──────────────────────────────────────────────────────────────
+torch==2.2.0
+torchvision==0.17.0
+ultralytics==8.3.52
+opencv-python==4.10.0.84
+opencv-python-headless==4.11.0.86
+tensorflow==2.18.0
 
-# OpenCV без GUI (стабильный пин для Cloud)
-opencv-python-headless==4.9.0.80
+# ─── Python экосистема ───────────────────────────────────────────────
+numpy==1.26.3
+pandas==2.2.3
+sqlalchemy==1.4.53
+psutil==5.9.8
+pillow==11.0.0
+plotly==6.0.1
 
-# ── Python ecosystem ─────────────────────────────────────────────────
-numpy>=2.1.2
-pandas>=2.3.0
-sqlalchemy==2.0.18
-psutil==5.9.5
-pillow>=10.3.0
-plotly==5.15.0
-
-# ── OpenAI via proxy ────────────────────────────────────────────────
+# ─── OpenAI через прокси ─────────────────────────────────────────────
 openai==1.72.0
