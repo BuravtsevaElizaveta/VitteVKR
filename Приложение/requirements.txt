@@ -1,22 +1,21 @@
 # --- App ---
 streamlit>=1.42.2,<1.51
 
-# --- ML (Py3.13 wheels) ---
+# --- ML (CPU, Python 3.13) ---
 torch==2.7.0
 torchvision==0.22.0
 ultralytics==8.3.210
 
-# Только headless OpenCV (без libGL)
-opencv-python-headless==4.9.0.80
+# --- OpenCV (совместим с NumPy 2.x) ---
+opencv-python-headless==4.10.0.84     # ВАЖНО: не 4.9.x и без opencv-python!
 
-# --- Py stack ---
-numpy>=2.1.2
-pandas>=2.3.0
+# --- Numeric stack (фиксируем, чтобы не «гуляло») ---
+numpy==2.3.3
+pandas==2.3.3
 sqlalchemy==2.0.18
 psutil==5.9.5
-pillow>=10.3.0
+pillow==11.0.0
 plotly==5.15.0
 
 # --- OpenAI / Proxy ---
 openai==1.72.0
-
