@@ -199,7 +199,7 @@ def render_parts_assistant(
 
         st.subheader("Опции распознавания")
         use_yolo = st.checkbox("Сначала выделять детали (YOLO)", value=False)
-        yolo_path = st.text_input("Путь к YOLO-весам", value="models/YOLOv8.pt")
+        yolo_path = st.text_input("Путь к YOLO-весам", value="Приложение/models/YOLOv8.pt")
         max_crops = st.slider("Макс. фрагментов", 1, 12, 6)
 
         st.subheader("Классы")
@@ -354,3 +354,4 @@ def render_parts_assistant(
             extra_json=None,
         )
         st.toast("Сохранено в detections.db", icon="💾")
+
