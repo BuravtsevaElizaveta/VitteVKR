@@ -4,41 +4,31 @@
 """
 
 from __future__ import annotations
+import streamlit as st
+import numpy as np
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 import time, json, uuid, tempfile
-import numpy as np
-import streamlit as st
 
-# ── безопасный импорт cv2 ────────────────────────────────────────────
+# --- OpenCV: мягкий импорт + диагностика
 CV2_OK, CV2_ERR = True, None
 try:
-    import cv2  # должен прийти из opencv-python-headless
+    import cv2
 except Exception as e:
     CV2_OK, CV2_ERR = False, e
 
-# ── ultralytics только если cv2 поднялся ────────────────────────────
+# --- Ultralytics: мягкий импорт
 UL_OK, UL_ERR = True, None
 try:
-    if CV2_OK:
-        from ultralytics import YOLO
-    else:
-        UL_OK, UL_ERR = False, RuntimeError("Ultralytics пропущен: OpenCV не загрузился")
+    from ultralytics import YOLO
 except Exception as e:
     UL_OK, UL_ERR = False, e
-
-from utils.db import insert_detection
-
 
 @st.cache_resource(show_spinner="Загрузка YOLO-весов…")
 def _load_yolo(weights_path: str):
     if not UL_OK:
-        raise RuntimeError(
-            "Пакет ultralytics недоступен. Убедитесь, что в requirements.txt НЕТ opencv-python, "
-            "а есть opencv-python-headless."
-        )
+        raise RuntimeError(f"Ultralytics недоступен: {UL_ERR}")
     return YOLO(weights_path)
-
 
 def _annotate(img_bgr: np.ndarray, result, names: Dict[int, str],
               conf_thr: float, thickness: int) -> Tuple[np.ndarray, List[Tuple[str, float]]]:
@@ -95,19 +85,20 @@ def _save_summary_to_db(db_path: Path, filename: str, source: str,
 def render_yolo_detection(db_path: Path):
     st.header("🔧 Детекция (YOLO)")
 
-    # Если OpenCV не загрузился — объясняем причину и выходим
     if not CV2_OK:
         st.warning("OpenCV (cv2) недоступен. Детекция отключена.")
         with st.expander("Показать техническую деталь ошибки"):
             st.code(repr(CV2_ERR))
-        st.info("Обычно это происходит, когда установлен пакет opencv-python вместо opencv-python-headless.")
+        st.info("➡️ Решение: добавьте файл packages.txt в корень репо со строками:\n"
+                "libgl1\nlibglib2.0-0\nlibsm6\nlibxrender1\nlibxext6\nffmpeg")
         return
+
     if not UL_OK:
-        st.warning("Ultralytics YOLO недоступен.")
+        st.warning("Ultralytics недоступен. Детекция отключена.")
         with st.expander("Показать техническую деталь ошибки"):
             st.code(repr(UL_ERR))
         return
-
+        
     with st.sidebar:
         st.subheader("Выбор модели YOLO")
         model_choice = st.selectbox("Выберите модель YOLO", ["YOLOv8"], index=0, key="yolo:ver")
@@ -226,4 +217,5 @@ def render_yolo_detection(db_path: Path):
             progress.empty(); info.empty()
             _save_summary_to_db(db_path, vid_file.name, "video", model_choice, dets_all)
             st.success("Обработка видео завершена и сохранена в БД.")
+
 
