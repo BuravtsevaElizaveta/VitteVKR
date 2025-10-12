@@ -104,15 +104,15 @@ def _first_existing(paths: List[Path]) -> Optional[Path]:
     return None
 
 def _find_yolo(user: Optional[Path]) -> Optional[Path]:
-    return _first_existing([user or Path(), Path("models/YOLOv8.pt"), Path("utils/YOLOv8.pt"), Path("YOLOv8.pt")])
+    return _first_existing([user or Path(), Path("Приложение/models/YOLOv8.pt"), Path("Приложение/utils/YOLOv8.pt"), Path("YOLOv8.pt")])
 
 def _find_cascade(user: Optional[Path]) -> Optional[Path]:
     return _first_existing([
         user or Path(),
-        Path("haarcascade_licence_plate_rus_16stages.xml"),
-        Path("haarcascade_russian_plate_number.xml"),
-        Path("models/cascades/haarcascade_licence_plate_rus_16stages.xml"),
-        Path("models/haarcascade_licence_plate_rus_16stages.xml"),
+        Path("Приложение/haarcascade_licence_plate_rus_16stages.xml"),
+        Path("Приложение/haarcascade_russian_plate_number.xml"),
+        Path("Приложение/models/cascades/haarcascade_licence_plate_rus_16stages.xml"),
+        Path("Приложение/models/haarcascade_licence_plate_rus_16stages.xml"),
     ])
 
 @st.cache_resource(show_spinner="Загрузка CNN…")
@@ -411,4 +411,5 @@ def render_plate_assistant(db_path: Path):
         brand=brand or None, car_type=car_type or None, color=color or None, conf_avg=avg_conf, extra_json=None
     )
     st.toast("Сохранено в detections.db", icon="💾")
+
 
