@@ -111,7 +111,7 @@ def render_yolo_detection(db_path: Path):
     with st.sidebar:
         st.subheader("Выбор модели YOLO")
         model_choice = st.selectbox("Выберите модель YOLO", ["YOLOv8"], index=0, key="yolo:ver")
-        weights_path = st.text_input("Путь к модели YOLOv8", "models/YOLOv8.pt", key="yolo:weights")
+        weights_path = st.text_input("Путь к модели YOLOv8", "Приложение/models/YOLOv8.pt", key="yolo:weights")
 
         st.subheader("Опции процессора")
         device = st.radio("Устройство", ["CPU", "GPU"], horizontal=True, key="yolo:device")
@@ -226,3 +226,4 @@ def render_yolo_detection(db_path: Path):
             progress.empty(); info.empty()
             _save_summary_to_db(db_path, vid_file.name, "video", model_choice, dets_all)
             st.success("Обработка видео завершена и сохранена в БД.")
+
