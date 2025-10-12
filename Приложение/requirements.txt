@@ -7,7 +7,7 @@ torchvision==0.22.0
 ultralytics==8.3.210
 
 # Только headless OpenCV (без libGL)
-opencv-python-headless==4.10.0.84
+opencv-python-headless==4.9.0.80
 
 # --- Py stack ---
 numpy>=2.1.2
@@ -19,3 +19,4 @@ plotly==5.15.0
 
 # --- OpenAI / Proxy ---
 openai==1.72.0
+
