@@ -1,8 +1,8 @@
 # components/plate_assistant.py
 # Номер + ИИ-ассистент:
 # - Детекция пластины: YOLO (без ресайза) → Haar (без ресайза) → морфологический локатор (fallback).
-# - Если TensorFlow доступен: сегментация символов + CNN (model.h5).
-# - Если TensorFlow недоступен: извлечение номера через лёгкую нормализацию + LLM-визион.
+# - Сегментация символов как в «исходном» пайплайне model.h5:
+#   инверсия + паддинг 44x24 → resize 28x28.
 # - Строка номера выводится всегда (даже если символы распознаны как '?').
 
 from __future__ import annotations
@@ -14,15 +14,7 @@ import pandas as pd
 import streamlit as st
 import cv2
 from PIL import Image
-
-# ── TensorFlow: опционально
-TF_OK = True
-TF_ERR = None
-try:
-    import tensorflow as tf  # может отсутствовать в облаке (Py 3.13)
-except Exception as _e:
-    TF_OK = False
-    TF_ERR = _e
+import tensorflow as tf
 
 from utils.db import insert_detection
 from openai_config import get_client, get_defaults
@@ -36,24 +28,9 @@ except Exception:
 
 log = logging.getLogger(__name__)
 
-# Алфавит модели (legacy CNN)
+# Алфавит модели
 _CHARS = '0123456789АВЕКМНОРСТУХ'
 _NUM2CHAR = {i: ch for i, ch in enumerate(_CHARS)}
-
-# ── Нормализация номера без TF (латиница↔кириллица, фильтры)
-_MAP = str.maketrans({
-    "O": "0", "o": "0", "I": "1", "l": "1",
-    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M",
-    "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T", "Х": "X"
-})
-PLATE_RE = re.compile(r"[A-ZА-Я0-9]{5,10}")
-
-def normalize_plate_text(text: str) -> str:
-    if not text:
-        return ""
-    t = text.strip().upper().translate(_MAP)
-    m = PLATE_RE.findall(t)
-    return m[0] if m else t
 
 # ── ProxyAPI helpers
 def _extract_text(resp) -> str:
@@ -66,8 +43,7 @@ def _extract_text(resp) -> str:
                 if getattr(itm, "type", None) == "message":
                     for c in getattr(itm, "content", []):
                         t = getattr(c, "text", None)
-                        if t:
-                            parts.append(t)
+                        if t: parts.append(t)
             if parts:
                 return " ".join(parts).strip()
     except Exception:
@@ -83,14 +59,13 @@ def _img_to_b64(img_bgr: np.ndarray, max_side: int = 224, q: int = 35) -> str:
     return base64.b64encode(enc).decode() if ok else ""
 
 def _gpt_vision(client, sys_prompt: str, user_text: str, img_bgr: Optional[np.ndarray], model: str) -> str:
-    content = [{"type": "input_text", "text": user_text}]
+    content = [{"type":"input_text","text":user_text}]
     if img_bgr is not None:
-        content.append({"type": "input_image", "image_url": "data:image/jpeg;base64," + _img_to_b64(img_bgr)})
+        content.append({"type":"input_image","image_url":"data:image/jpeg;base64,"+_img_to_b64(img_bgr)})
     try:
         r = client.responses.create(
             model=model,
-            input=[{"role": "system", "content": sys_prompt},
-                   {"role": "user", "content": content}],
+            input=[{"role":"system","content":sys_prompt},{"role":"user","content":content}],
             temperature=0.0, max_output_tokens=200
         )
         return _extract_text(r)
@@ -101,23 +76,14 @@ def _gpt_vision(client, sys_prompt: str, user_text: str, img_bgr: Optional[np.nd
 def gpt_brand(img, c, m): return _gpt_vision(c, "Определи марку автомобиля. Верни только марку.", "Какая марка авто?", img, m) or "Не удалось распознать марку"
 def gpt_color(img, c, m): return _gpt_vision(c, "Определи основной цвет кузова (одно слово по-русски).", "Какой цвет авто?", img, m) or "Не удалось распознать цвет"
 def gpt_type (img, c, m): return _gpt_vision(c, "Классифицируй тип: легковой/грузовой/автобус/мотоцикл. Верни одно слово.", "Какой тип ТС?", img, m) or "Не удалось классифицировать тип автомобиля"
-
-def gpt_plate(img, c, m) -> str:
-    # Чтение номера как текста: коротко и строго
-    sys = ("Ты распознаёшь государственный номер на фотографии. Верни ТОЛЬКО номер без комментариев. "
-           "Допускается формат: А123ВС77/А123ВС777 (кириллица) или аналог латиницей.")
-    txt = _gpt_vision(c, sys, "Считай номер и верни только его.", img, m)
-    return normalize_plate_text(txt)
-
 def gpt_reg_year(plate, c, m):
-    if not plate:
-        return "", ""
+    if not plate: return "", ""
     sys = ("Ты анализируешь российский госномер (А123ВС77/А123ВС777). "
            "По коду региона назови субъект РФ и предположи год выдачи. "
            "Строго JSON: {\"region_name\":\"...\",\"year_issued\":\"...\"}.")
     txt = _gpt_vision(c, sys, f"Определи регион+год выдачи для: {plate}", None, m)
     try:
-        j = json.loads(txt); return j.get("region_name", ""), j.get("year_issued", "")
+        j = json.loads(txt); return j.get("region_name",""), j.get("year_issued","")
     except Exception:
         return "", ""
 
@@ -143,14 +109,11 @@ def _find_cascade(user: Optional[Path]) -> Optional[Path]:
 # ── Кэш моделей
 @st.cache_resource(show_spinner="Загрузка CNN…")
 def _load_cnn(path: Path):
-    if not TF_OK:
-        return None
     return tf.keras.models.load_model(str(path))
 
 @st.cache_resource(show_spinner="Загрузка YOLO…")
 def _load_yolo(path: Path):
-    if not _YOLO_OK:
-        return None
+    if not _YOLO_OK: return None
     try:
         return YOLO(str(path))
     except Exception as e:
@@ -170,7 +133,7 @@ def _is_plausible_box(x, y, w, h, H, W) -> bool:
 
 def _edge_density(gray_roi: np.ndarray) -> float:
     e = cv2.Canny(gray_roi, 70, 160)
-    return float(e.mean()) / 255.0
+    return float(e.mean())/255.0
 
 # ── Морфологический локатор (fallback/уточнение)
 def _locate_plate_morph(img_bgr: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
@@ -190,12 +153,12 @@ def _locate_plate_morph(img_bgr: np.ndarray) -> Optional[Tuple[int,int,int,int]]
     best = None; best_score = -1.0
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
-        if not _is_plausible_box(x, y, w, h, H, W):
+        if not _is_plausible_box(x,y,w,h,H,W):
             continue
         roi = gray[y:y+h, x:x+w]
         score = 0.6 * _edge_density(roi) + 0.4 * (1.0 - min(1.0, abs((w/h) - 4.5) / 3.5))
         if score > best_score:
-            best_score = score; best = (x, y, w, h)
+            best_score = score; best = (x,y,w,h)
     return best
 
 # ── Haar: без ресайза + строгая фильтрация
@@ -209,30 +172,30 @@ def plate_detect_haar(img_bgr: np.ndarray, cascade_path: Path) -> Tuple[np.ndarr
         return img_bgr, None
 
     rects = cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=4,
-                                     minSize=(50, 16), flags=cv2.CASCADE_SCALE_IMAGE)
+                                     minSize=(50,16), flags=cv2.CASCADE_SCALE_IMAGE)
     H, W = gray.shape[:2]
     best = None; best_score = -1.0
-    for (x, y, w, h) in rects:
-        if not _is_plausible_box(x, y, w, h, H, W):
+    for (x,y,w,h) in rects:
+        if not _is_plausible_box(x,y,w,h,H,W):
             continue
         roi = gray[y:y+h, x:x+w]
         score = 0.6 * _edge_density(roi) + 0.4 * (1.0 - min(1.0, abs((w/h) - 4.5) / 3.5))
         if score > best_score:
-            best_score = score; best = (x, y, w, h)
+            best_score = score; best = (x,y,w,h)
 
     if best is None:
         best = _locate_plate_morph(img_bgr)
         if best is None:
             return img_bgr, None
 
-    x, y, w, h = best
+    x,y,w,h = best
     pad_x, pad_y = int(0.03*w), int(0.12*h)
-    x1, y1 = max(0, x - pad_x), max(0, y - pad_y)
-    x2, y2 = min(W, x + w + pad_x), min(H, y + h + pad_y)
+    x1, y1 = max(0, x-pad_x), max(0, y-pad_y)
+    x2, y2 = min(W, x+w+pad_x), min(H, y+h+pad_y)
 
     roi = img_bgr[y1:y2, x1:x2].copy()
     out = img_bgr.copy()
-    cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    cv2.rectangle(out, (x1,y1), (x2,y2), (0,255,0), 2)
     return out, roi
 
 # ── YOLO: без ресайза входа
@@ -247,29 +210,29 @@ def plate_detect_yolo(img_bgr: np.ndarray, model) -> Tuple[np.ndarray, Optional[
         xyxy = boxes.xyxy.cpu().numpy().astype(int)
         conf = boxes.conf.cpu().numpy()
         cls  = boxes.cls.cpu().numpy().astype(int)
-        cand = [i for i, c in enumerate(cls) if str(names.get(int(c), "")).lower().replace("-", "_") in ("license_plate", "licenseplate", "plate")]
+        cand = [i for i,c in enumerate(cls) if str(names.get(int(c), "")).lower().replace("-","_") in ("license_plate","licenseplate","plate")]
         if not cand:
-            ar = (xyxy[:, 2] - xyxy[:, 0]) / np.maximum(1, (xyxy[:, 3] - xyxy[:, 1]))
-            scores = conf + (np.clip(1.0 - np.abs(ar - 4.5) / 3.5, 0, 1) * 0.5)
+            ar = (xyxy[:,2]-xyxy[:,0]) / np.maximum(1, (xyxy[:,3]-xyxy[:,1]))
+            scores = conf + (np.clip(1.0 - np.abs(ar-4.5)/3.5, 0, 1)*0.5)
             idx = int(np.argmax(scores))
         else:
             idx = int(cand[np.argmax(conf[cand])])
 
-        x1, y1, x2, y2 = xyxy[idx]
-        w, h = x2 - x1, y2 - y1
-        if not _is_plausible_box(x1, y1, w, h, H, W):
+        x1,y1,x2,y2 = xyxy[idx]
+        w,h = x2-x1, y2-y1
+        if not _is_plausible_box(x1,y1,w,h,H,W):
             best = _locate_plate_morph(img_bgr)
             if best is not None:
-                x, y, w, h = best
-                x1, y1, x2, y2 = x, y, x + w, y + h
+                x,y,w,h = best
+                x1,y1,x2,y2 = x,y,x+w,y+h
 
         pad_x, pad_y = int(0.03*(x2-x1)), int(0.12*(y2-y1))
-        x1, y1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
-        x2, y2 = min(W, x2 + pad_x), min(H, y2 + pad_y)
+        x1,y1 = max(0,x1-pad_x), max(0,y1-pad_y)
+        x2,y2 = min(W,x2+pad_x), min(H,y2+pad_y)
 
         roi = img_bgr[y1:y2, x1:x2].copy()
         out = img_bgr.copy()
-        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.rectangle(out, (x1,y1), (x2,y2), (0,255,0), 2)
         return out, roi
     return img_bgr, None
 
@@ -288,7 +251,7 @@ def plate_detect(img_bgr: np.ndarray, method: str, yolo_path: Optional[Path], ca
     st.warning("Не найден файл каскада для Haar-детекции.")
     return img_bgr, None
 
-# ── Сегментация символов (legacy pipeline для CNN)
+# ── Сегментация символов (как в исходном приложении model.h5)
 def _segment_characters_legacy(image: np.ndarray) -> np.ndarray:
     """
     Возвращает массив 2D-патчей (каждый 44x24, белые символы на чёрном фоне),
@@ -346,8 +309,6 @@ def _fix_dim(img):
     return np.stack((img,)*3, axis=-1) if img.ndim == 2 else img
 
 def recognize_number_cnn(roi: np.ndarray, model, thr: float) -> Tuple[str, List[float]]:
-    if model is None:
-        return "", []
     seg_chars = _segment_characters_legacy(roi)
     if seg_chars.size == 0:
         return "", []
@@ -392,14 +353,8 @@ def render_plate_assistant(db_path: Path):
                              index=0 if (_find_yolo(Path(yolo_path_ui)) is not None and _YOLO_OK) else 1)
         thr = st.slider("Порог уверенности (CNN), ниже — '?'", 0.0, 1.0, 0.50, 0.05)
 
-    if not TF_OK:
-        st.info("TensorFlow недоступен в этом деплое (Py 3.13). Будет использован fallback: лёгкая нормализация + LLM-визион.")
-        with st.expander("Техническая деталь"):
-            st.code(repr(TF_ERR))
-
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        f = st.file_uploader("Изображение автомобиля", type=["jpg","jpeg","png"])
+    c1,c2 = st.columns([1,1])
+    with c1: f = st.file_uploader("Изображение автомобиля", type=["jpg","jpeg","png"])
     with c2:
         do_all = st.checkbox("Выполнить всё (марка/тип/цвет/регион)", value=True)
         btn = st.button("Анализировать", type="primary", use_container_width=True)
@@ -413,11 +368,16 @@ def render_plate_assistant(db_path: Path):
     if not btn or not f:
         return
 
-    # Готовим клиента LLM заранее (нужен и для TF-fallback)
+    try:
+        cnn = _load_cnn(Path(cnn_path))
+    except Exception as e:
+        st.error(f"Не удалось загрузить CNN: {e}")
+        return
+
     client = get_client(api_key=api_key, base_url=base_url)
     img_bgr = np.array(Image.open(f).convert("RGB"))[:, :, ::-1]  # полное разрешение
 
-    # 1) Детекция пластины
+    # 1) Детекция
     det_img, roi = plate_detect(img_bgr, det_m, Path(yolo_path_ui), Path(cascade_path_ui))
     if roi is None:
         best = _locate_plate_morph(img_bgr)
@@ -433,23 +393,12 @@ def render_plate_assistant(db_path: Path):
     st.subheader("Распознавание номера…")
     st.image(cv2.cvtColor(det_img, cv2.COLOR_BGR2RGB), caption="Обнаруженный номер", width=360)
 
-    # 2) Распознавание: CNN (если доступен) → иначе LLM-визион
-    plate, confs = "", []
-    if TF_OK:
-        try:
-            cnn = _load_cnn(Path(cnn_path))
-        except Exception as e:
-            cnn = None
-            st.warning(f"CNN не загрузился, используем LLM-fallback: {e}")
-        plate, confs = recognize_number_cnn(roi, cnn, thr) if cnn is not None else ("", [])
-    if not plate:
-        # fallback: LLM читает номер как текст
-        plate = gpt_plate(roi if roi is not None else img_bgr, client, gpt_model)
-        confs = []  # у LLM нет покадровых уверенности
+    # 2) CNN
+    plate, confs = recognize_number_cnn(roi, cnn, thr)
     if fmt == 'Новые РФ номера' and plate:
         plate, confs = fix_number_format_new_rus(plate, confs)
 
-    # 3) Доп. атрибуты через LLM (по желанию)
+    # 3) GPT
     brand = color = car_type = ""
     if do_all:
         brand = gpt_brand(img_bgr, client, gpt_model)
@@ -482,7 +431,7 @@ def render_plate_assistant(db_path: Path):
         db_path=db_path,
         ts=time.strftime("%Y-%m-%dT%H:%M:%S"),
         kind="plate", source="image", filename=f.name,
-        model=("YOLOv8→" if det_m=="YOLOv8" else "") + ("Haar/Morph+CNN" if TF_OK else "Haar/Morph+LLM"),
+        model=("YOLOv8→" if det_m=="YOLOv8" else "") + "Haar/Morph+CNN",
         label_en=plate or None, label_ru=plate or None, score=avg_conf,
         json_top5=None, price_min=None, price_max=None, currency=None, image_path=None,
         plate_number=plate or None, region=region or None, year_issued=year or None,
