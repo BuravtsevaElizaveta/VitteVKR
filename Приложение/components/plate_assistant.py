@@ -1,10 +1,5 @@
 # components/plate_assistant.py
-# Номер + ИИ-ассистент:
-# - Детекция пластины: YOLO (без ресайза) → Haar (без ресайза) → морфологический локатор (fallback).
-# - Сегментация символов как в «исходном» пайплайне model.h5:
-#   инверсия + паддинг 44x24 → resize 28x28.
-# - Строка номера выводится всегда (даже если символы распознаны как '?').
-
+# Номер + ИИ-ассистент (YOLO/Haar/Morph + опциональный CNN + GPT)
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple, List, Optional
@@ -12,27 +7,45 @@ import re, json, base64, time, logging
 import numpy as np
 import pandas as pd
 import streamlit as st
-import cv2
 from PIL import Image
-import tensorflow as tf
+
+# --- локальный utils раньше внешних ---
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# безопасный импорт cv2
+CV2_OK = True
+CV2_ERR = None
+try:
+    import cv2  # type: ignore
+except Exception as e:
+    CV2_OK = False
+    CV2_ERR = e
+
+# безопасный импорт TensorFlow (на Cloud Py3.13 его нет)
+TF_OK = True
+TF_ERR = None
+try:
+    import tensorflow as tf  # type: ignore
+except Exception as e:
+    TF_OK = False
+    TF_ERR = e
 
 from utils.db import insert_detection
 from openai_config import get_client, get_defaults
 
-# ── YOLO (опционально)
+# YOLO (опционально)
 try:
-    from ultralytics import YOLO
+    from ultralytics import YOLO  # type: ignore
     _YOLO_OK = True
 except Exception:
     _YOLO_OK = False
 
 log = logging.getLogger(__name__)
 
-# Алфавит модели
 _CHARS = '0123456789АВЕКМНОРСТУХ'
 _NUM2CHAR = {i: ch for i, ch in enumerate(_CHARS)}
 
-# ── ProxyAPI helpers
 def _extract_text(resp) -> str:
     try:
         if hasattr(resp, "output_text") and resp.output_text:
@@ -63,11 +76,8 @@ def _gpt_vision(client, sys_prompt: str, user_text: str, img_bgr: Optional[np.nd
     if img_bgr is not None:
         content.append({"type":"input_image","image_url":"data:image/jpeg;base64,"+_img_to_b64(img_bgr)})
     try:
-        r = client.responses.create(
-            model=model,
-            input=[{"role":"system","content":sys_prompt},{"role":"user","content":content}],
-            temperature=0.0, max_output_tokens=200
-        )
+        r = client.responses.create(model=model, input=[{"role":"system","content":sys_prompt},{"role":"user","content":content}],
+                                    temperature=0.0, max_output_tokens=200)
         return _extract_text(r)
     except Exception as e:
         log.warning("Proxy error: %s", e)
@@ -87,7 +97,6 @@ def gpt_reg_year(plate, c, m):
     except Exception:
         return "", ""
 
-# ── Поиск файлов
 def _first_existing(paths: List[Path]) -> Optional[Path]:
     for p in paths:
         if p and Path(p).exists():
@@ -106,9 +115,10 @@ def _find_cascade(user: Optional[Path]) -> Optional[Path]:
         Path("models/haarcascade_licence_plate_rus_16stages.xml"),
     ])
 
-# ── Кэш моделей
 @st.cache_resource(show_spinner="Загрузка CNN…")
 def _load_cnn(path: Path):
+    if not TF_OK:
+        raise RuntimeError("TensorFlow недоступен в этом деплое; CNN-распознавание отключено.")
     return tf.keras.models.load_model(str(path))
 
 @st.cache_resource(show_spinner="Загрузка YOLO…")
@@ -120,12 +130,10 @@ def _load_yolo(path: Path):
         log.error("YOLO load failed: %s", e)
         return None
 
-# ── Геометрия окна
 def _is_plausible_box(x, y, w, h, H, W) -> bool:
     if w <= 0 or h <= 0: return False
     ar = w / float(h)
     h_frac, w_frac = h/float(H), w/float(W)
-    # госномер: широкий (2.2–6.8), по высоте 3–20% кадра, по ширине 8–60%
     if not (2.2 <= ar <= 6.8): return False
     if not (0.03 <= h_frac <= 0.20): return False
     if not (0.08 <= w_frac <= 0.60): return False
@@ -135,7 +143,6 @@ def _edge_density(gray_roi: np.ndarray) -> float:
     e = cv2.Canny(gray_roi, 70, 160)
     return float(e.mean())/255.0
 
-# ── Морфологический локатор (fallback/уточнение)
 def _locate_plate_morph(img_bgr: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     rect_k = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
@@ -147,7 +154,6 @@ def _locate_plate_morph(img_bgr: np.ndarray) -> Optional[Tuple[int,int,int,int]]
     _, bw = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, rect_k, iterations=2)
     bw = cv2.medianBlur(bw, 3)
-
     cnts, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     H, W = gray.shape[:2]
     best = None; best_score = -1.0
@@ -161,52 +167,42 @@ def _locate_plate_morph(img_bgr: np.ndarray) -> Optional[Tuple[int,int,int,int]]
             best_score = score; best = (x,y,w,h)
     return best
 
-# ── Haar: без ресайза + строгая фильтрация
 def plate_detect_haar(img_bgr: np.ndarray, cascade_path: Path) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
-
     cascade = cv2.CascadeClassifier(str(cascade_path))
     if cascade.empty():
         st.warning("Каскад не загрузился. Проверьте путь к *.xml.")
         return img_bgr, None
-
-    rects = cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=4,
-                                     minSize=(50,16), flags=cv2.CASCADE_SCALE_IMAGE)
+    rects = cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=4, minSize=(50,16), flags=cv2.CASCADE_SCALE_IMAGE)
     H, W = gray.shape[:2]
     best = None; best_score = -1.0
     for (x,y,w,h) in rects:
-        if not _is_plausible_box(x,y,w,h,H,W):
-            continue
+        if not _is_plausible_box(x,y,w,h,H,W): continue
         roi = gray[y:y+h, x:x+w]
         score = 0.6 * _edge_density(roi) + 0.4 * (1.0 - min(1.0, abs((w/h) - 4.5) / 3.5))
         if score > best_score:
             best_score = score; best = (x,y,w,h)
-
     if best is None:
         best = _locate_plate_morph(img_bgr)
         if best is None:
             return img_bgr, None
-
     x,y,w,h = best
     pad_x, pad_y = int(0.03*w), int(0.12*h)
     x1, y1 = max(0, x-pad_x), max(0, y-pad_y)
     x2, y2 = min(W, x+w+pad_x), min(H, y+h+pad_y)
-
     roi = img_bgr[y1:y2, x1:x2].copy()
     out = img_bgr.copy()
     cv2.rectangle(out, (x1,y1), (x2,y2), (0,255,0), 2)
     return out, roi
 
-# ── YOLO: без ресайза входа
 def plate_detect_yolo(img_bgr: np.ndarray, model) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     res = model.predict(img_bgr, verbose=False, device="cpu", conf=0.25, iou=0.5)
     H, W = img_bgr.shape[:2]
     for r in res:
         names = getattr(r, "names", {}) or {}
         boxes = r.boxes
-        if boxes is None or len(boxes) == 0:
-            continue
+        if boxes is None or len(boxes) == 0: continue
         xyxy = boxes.xyxy.cpu().numpy().astype(int)
         conf = boxes.conf.cpu().numpy()
         cls  = boxes.cls.cpu().numpy().astype(int)
@@ -217,7 +213,6 @@ def plate_detect_yolo(img_bgr: np.ndarray, model) -> Tuple[np.ndarray, Optional[
             idx = int(np.argmax(scores))
         else:
             idx = int(cand[np.argmax(conf[cand])])
-
         x1,y1,x2,y2 = xyxy[idx]
         w,h = x2-x1, y2-y1
         if not _is_plausible_box(x1,y1,w,h,H,W):
@@ -225,11 +220,9 @@ def plate_detect_yolo(img_bgr: np.ndarray, model) -> Tuple[np.ndarray, Optional[
             if best is not None:
                 x,y,w,h = best
                 x1,y1,x2,y2 = x,y,x+w,y+h
-
         pad_x, pad_y = int(0.03*(x2-x1)), int(0.12*(y2-y1))
         x1,y1 = max(0,x1-pad_x), max(0,y1-pad_y)
         x2,y2 = min(W,x2+pad_x), min(H,y2+pad_y)
-
         roi = img_bgr[y1:y2, x1:x2].copy()
         out = img_bgr.copy()
         cv2.rectangle(out, (x1,y1), (x2,y2), (0,255,0), 2)
@@ -251,57 +244,31 @@ def plate_detect(img_bgr: np.ndarray, method: str, yolo_path: Optional[Path], ca
     st.warning("Не найден файл каскада для Haar-детекции.")
     return img_bgr, None
 
-# ── Сегментация символов (как в исходном приложении model.h5)
 def _segment_characters_legacy(image: np.ndarray) -> np.ndarray:
-    """
-    Возвращает массив 2D-патчей (каждый 44x24, белые символы на чёрном фоне),
-    отсортированных слева направо. Это именно тот препроцесс, на котором обучалась model.h5.
-    """
-    if image is None:
-        return np.array([])
-
-    img_lp = cv2.resize(image, (333, 75))  # нормализация размера таблички
+    if image is None: return np.array([])
+    img_lp = cv2.resize(image, (333, 75))
     img_gray = cv2.cvtColor(img_lp, cv2.COLOR_BGR2GRAY)
-
-    # Адаптивная бинаризация (фон белый, символы чёрные)
-    img_bin = cv2.adaptiveThreshold(
-        img_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 11, 2
-    )
-    # Склеиваем разрывы
+    img_bin = cv2.adaptiveThreshold(img_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
     img_bin = cv2.morphologyEx(img_bin, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)))
-
-    # Чистим края
     img_bin[0:3, :], img_bin[:, 0:3] = 255, 255
     img_bin[72:75, :], img_bin[:, 330:333] = 255, 255
-
     LP_W, LP_H = img_bin.shape
     dims = [LP_W / 6, LP_W / 2, LP_H / 10, 2 * LP_H / 3]
     lower_h, upper_h = dims[0] * 0.5, dims[1] * 1.2
     lower_w, upper_w = dims[2] * 0.5, dims[3] * 1.2
-
     contours, hierarchy = cv2.findContours(img_bin.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-    if hierarchy is None:
-        return np.array([])
-
+    if hierarchy is None: return np.array([])
     chars, xs = [], []
     for i, cnt in enumerate(contours):
-        if hierarchy[0][i][3] == -1:
-            continue  # внешний контур
+        if hierarchy[0][i][3] == -1: continue
         x, y, w, h = cv2.boundingRect(cnt)
         ar = w / float(h)
         if lower_h < h < upper_h and lower_w < w < upper_w and 0.3 < ar < 1.2:
-            # Инверсия символа → белый символ на чёрном (как ждёт CNN)
             char = cv2.subtract(255, cv2.resize(img_bin[y:y+h, x:x+w], (20, 40)))
-            # Паддинг до 44x24
             char_copy = np.zeros((44, 24), dtype=np.uint8)
             char_copy[2:42, 2:22] = char
-            chars.append(char_copy)
-            xs.append(x)
-
-    if not chars:
-        return np.array([])
-
+            chars.append(char_copy); xs.append(x)
+    if not chars: return np.array([])
     idx_sorted = np.argsort(np.array(xs))
     return np.array([chars[i] for i in idx_sorted])
 
@@ -310,8 +277,7 @@ def _fix_dim(img):
 
 def recognize_number_cnn(roi: np.ndarray, model, thr: float) -> Tuple[str, List[float]]:
     seg_chars = _segment_characters_legacy(roi)
-    if seg_chars.size == 0:
-        return "", []
+    if seg_chars.size == 0: return "", []
     out, confs = [], []
     for ch in seg_chars:
         img28 = cv2.resize(ch, (28, 28))
@@ -331,9 +297,14 @@ def fix_number_format_new_rus(s: str, confs: List[float]) -> Tuple[str, List[flo
         if re.match(pat, cand or ""): return cand, confs[:-1]
     return s or "", confs
 
-# ── UI
 def render_plate_assistant(db_path: Path):
     st.header("🪪 Номер + ИИ-ассистент")
+    if not CV2_OK:
+        st.info("OpenCV недоступен в этом деплое. Вкладка ограничена.")
+        if CV2_ERR:
+            with st.expander("Техническая деталь"):
+                st.code(repr(CV2_ERR))
+        return
 
     defaults = get_defaults()
     with st.sidebar:
@@ -368,14 +339,8 @@ def render_plate_assistant(db_path: Path):
     if not btn or not f:
         return
 
-    try:
-        cnn = _load_cnn(Path(cnn_path))
-    except Exception as e:
-        st.error(f"Не удалось загрузить CNN: {e}")
-        return
-
     client = get_client(api_key=api_key, base_url=base_url)
-    img_bgr = np.array(Image.open(f).convert("RGB"))[:, :, ::-1]  # полное разрешение
+    img_bgr = np.array(Image.open(f).convert("RGB"))[:, :, ::-1]
 
     # 1) Детекция
     det_img, roi = plate_detect(img_bgr, det_m, Path(yolo_path_ui), Path(cascade_path_ui))
@@ -393,10 +358,18 @@ def render_plate_assistant(db_path: Path):
     st.subheader("Распознавание номера…")
     st.image(cv2.cvtColor(det_img, cv2.COLOR_BGR2RGB), caption="Обнаруженный номер", width=360)
 
-    # 2) CNN
-    plate, confs = recognize_number_cnn(roi, cnn, thr)
-    if fmt == 'Новые РФ номера' and plate:
-        plate, confs = fix_number_format_new_rus(plate, confs)
+    # 2) CNN (опционально)
+    plate, confs = "", []
+    if TF_OK:
+        try:
+            cnn = _load_cnn(Path(cnn_path))
+            plate, confs = recognize_number_cnn(roi, cnn, thr)
+            if fmt == 'Новые РФ номера' and plate:
+                plate, confs = fix_number_format_new_rus(plate, confs)
+        except Exception as e:
+            st.info(f"CNN недоступен: {e}")
+    else:
+        st.info("TensorFlow не установлен (Py3.13 Cloud). CNN-распознавание номера отключено.")
 
     # 3) GPT
     brand = color = car_type = ""
@@ -409,7 +382,7 @@ def render_plate_assistant(db_path: Path):
         st.subheader("Дополнительный анализ номера (регион, год выдачи)…")
         region, year = gpt_reg_year(plate, client, gpt_model)
 
-    # 4) Вывод (номер выводим ВСЕГДА)
+    # 4) Вывод
     st.success("Готово.")
     st.header("Результаты анализа")
     st.write(f"**Номер**: {plate or '—'}")
@@ -431,7 +404,7 @@ def render_plate_assistant(db_path: Path):
         db_path=db_path,
         ts=time.strftime("%Y-%m-%dT%H:%M:%S"),
         kind="plate", source="image", filename=f.name,
-        model=("YOLOv8→" if det_m=="YOLOv8" else "") + "Haar/Morph+CNN",
+        model=("YOLOv8→" if det_m=="YOLOv8" else "") + "Haar/Morph" + ("+CNN" if confs else ""),
         label_en=plate or None, label_ru=plate or None, score=avg_conf,
         json_top5=None, price_min=None, price_max=None, currency=None, image_path=None,
         plate_number=plate or None, region=region or None, year_issued=year or None,
